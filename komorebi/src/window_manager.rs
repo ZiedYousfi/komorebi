@@ -239,23 +239,30 @@ impl WindowManager {
             let mouse_follows_focus = self.mouse_follows_focus;
             for (monitor_idx, monitor) in self.monitors_mut().iter_mut().enumerate() {
                 let mut focused_workspace = 0;
-                for (workspace_idx, workspace) in monitor.workspaces_mut().iter_mut().enumerate() {
-                    if let Some(state_monitor) = state.monitors.elements().get(monitor_idx)
-                        && let Some(state_workspace) = state_monitor.workspaces().get(workspace_idx)
+                if let Some(state_monitor) = state.monitors.elements().get(monitor_idx) {
+                    monitor
+                        .workspaces_mut()
+                        .resize(state_monitor.workspaces().len(), Workspace::default());
+
+                    for (workspace_idx, workspace) in
+                        monitor.workspaces_mut().iter_mut().enumerate()
                     {
-                        // to make sure padding and layout_options changes get applied for users after a quick restart
-                        let container_padding = workspace.container_padding;
-                        let workspace_padding = workspace.workspace_padding;
-                        let layout_options = workspace.layout_options;
+                        if let Some(state_workspace) = state_monitor.workspaces().get(workspace_idx)
+                        {
+                            // to make sure padding and layout_options changes get applied for users after a quick restart
+                            let container_padding = workspace.container_padding;
+                            let workspace_padding = workspace.workspace_padding;
+                            let layout_options = workspace.layout_options;
 
-                        *workspace = state_workspace.clone();
+                            *workspace = state_workspace.clone();
 
-                        workspace.container_padding = container_padding;
-                        workspace.workspace_padding = workspace_padding;
-                        workspace.layout_options = layout_options;
+                            workspace.container_padding = container_padding;
+                            workspace.workspace_padding = workspace_padding;
+                            workspace.layout_options = layout_options;
 
-                        if state_monitor.focused_workspace_idx() == workspace_idx {
-                            focused_workspace = workspace_idx;
+                            if state_monitor.focused_workspace_idx() == workspace_idx {
+                                focused_workspace = workspace_idx;
+                            }
                         }
                     }
                 }
@@ -1166,6 +1173,20 @@ impl WindowManager {
         Ok(())
     }
 
+    fn reveal_focused_scrolling_container(&mut self) -> eyre::Result<()> {
+        let should_reveal = {
+            let workspace = self.focused_workspace()?;
+            matches!(workspace.layout, Layout::Default(DefaultLayout::Scrolling))
+                && !workspace.containers().is_empty()
+        };
+
+        if should_reveal {
+            self.update_focused_workspace(false, false)?;
+        }
+
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self))]
     pub fn resize_window(
         &mut self,
@@ -1968,6 +1989,12 @@ impl WindowManager {
                 };
             }
 
+            self.reveal_focused_scrolling_container()?;
+
+            if let Ok(focused_window) = self.focused_window() {
+                focused_window.focus(self.mouse_follows_focus)?;
+            }
+
             return Ok(());
         }
 
@@ -2119,7 +2146,11 @@ impl WindowManager {
 
         let mut cross_monitor_monocle_or_max = false;
 
-        // this is for when we are scrolling across workspaces like PaperWM
+        // Scrolling now keeps off-screen columns parked outside the virtual desktop so hidden
+        // columns remain attached to their current monitor. We still allow explicit workspace
+        // boundary traversal below, but multi-monitor scrolling focus may eventually want a
+        // dedicated config option so users can choose whether horizontal focus wraps to another
+        // monitor/workspace or stays monitor-local.
         if new_idx.is_none()
             && matches!(
                 self.cross_boundary_behaviour,
@@ -2235,6 +2266,10 @@ impl WindowManager {
                 let workspace = self.focused_workspace_mut()?;
                 workspace.focus_container(idx);
             }
+        }
+
+        if !cross_monitor_monocle_or_max {
+            self.reveal_focused_scrolling_container()?;
         }
 
         if !cross_monitor_monocle_or_max {
@@ -2594,6 +2629,8 @@ impl WindowManager {
             .ok_or_eyre("this is not a valid direction from the current position")?;
 
         workspace.focus_container(new_idx);
+
+        self.reveal_focused_scrolling_container()?;
 
         if maximize_next {
             self.toggle_maximize()?;
@@ -3198,15 +3235,7 @@ impl WindowManager {
     pub fn change_workspace_layout_default(&mut self, layout: DefaultLayout) -> eyre::Result<()> {
         tracing::info!("changing layout");
 
-        let monitor_count = self.monitors().len();
         let workspace = self.focused_workspace_mut()?;
-
-        if monitor_count > 1 && matches!(layout, DefaultLayout::Scrolling) {
-            tracing::warn!(
-                "scrolling layout is only supported for a single monitor; not changing layout"
-            );
-            return Ok(());
-        }
 
         match &workspace.layout {
             Layout::Default(_) => {}

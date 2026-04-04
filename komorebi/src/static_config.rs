@@ -223,6 +223,9 @@ pub struct WorkspaceConfig {
     /// Layout rules in the format of threshold => layout
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout_rules: Option<HashMap<usize, DefaultLayout>>,
+    /// Work area offset rules in the format of threshold => Rect (default: None)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_area_offset_rules: Option<HashMap<usize, Rect>>,
     /// END OF LIFE FEATURE: Custom layout rules
     #[deprecated(note = "End of life feature")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -286,6 +289,13 @@ impl From<&Workspace> for WorkspaceConfig {
             }
         }
         let layout_rules = (!layout_rules.is_empty()).then_some(layout_rules);
+
+        let mut work_area_offset_rules = HashMap::new();
+        for (threshold, offset) in &value.work_area_offset_rules {
+            work_area_offset_rules.insert(*threshold, *offset);
+        }
+        let work_area_offset_rules =
+            (!work_area_offset_rules.is_empty()).then_some(work_area_offset_rules);
 
         let mut window_container_behaviour_rules = HashMap::new();
         for (threshold, behaviour) in value.window_container_behaviour_rules.iter().flatten() {
@@ -353,6 +363,7 @@ impl From<&Workspace> for WorkspaceConfig {
                 .workspace_config
                 .as_ref()
                 .and_then(|c| c.workspace_rules.clone()),
+            work_area_offset_rules,
             work_area_offset: value.work_area_offset,
             apply_window_based_work_area_offset: Some(value.apply_window_based_work_area_offset),
             window_container_behaviour: value.window_container_behaviour,
@@ -1344,8 +1355,6 @@ impl StaticConfig {
         workspace_matching_rules.clear();
         drop(workspace_matching_rules);
 
-        let monitor_count = wm.monitors().len();
-
         let offset = wm.work_area_offset;
         for (i, monitor) in wm.monitors_mut().iter_mut().enumerate() {
             let preferred_config_idx = {
@@ -1394,15 +1403,6 @@ impl StaticConfig {
                 monitor.update_workspaces_globals(offset);
                 for (j, ws) in monitor.workspaces_mut().iter_mut().enumerate() {
                     if let Some(workspace_config) = monitor_config.workspaces.get_mut(j) {
-                        if monitor_count > 1
-                            && matches!(workspace_config.layout, Some(DefaultLayout::Scrolling))
-                        {
-                            tracing::warn!(
-                                "scrolling layout is only supported for a single monitor; falling back to columns layout"
-                            );
-                            workspace_config.layout = Some(DefaultLayout::Columns);
-                        }
-
                         ws.load_static_config(workspace_config)?;
                     }
                 }
